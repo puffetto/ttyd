@@ -1,9 +1,10 @@
 #include "server.h"
-#include "raw_pipes_protocol.h"
-#include "launch_cmd.h"
 
 #include <errno.h>
 #include <getopt.h>
+
+#include "launccmd.h"
+#include "pipeprotocol.h"
 
 #if defined(__has_include)
 #  if __has_include(<json-c/json.h>)

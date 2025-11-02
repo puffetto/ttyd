@@ -2,9 +2,9 @@
 // Created by Andrea Cocito on 02/11/25.
 //
 
-#include "raw_pipes_protocol.h"
-
 #include <errno.h>
+
+#include "pipeprotocol.h"
 // ReSharper disable once CppUnusedIncludeDirective
 #include <fcntl.h>
 #include <libwebsockets.h>
@@ -17,9 +17,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "launch_cmd.h"
+#include "launccmd.h"
 #include "server.h"
-#include "url_args.h"
+#include "urlargs.h"
 
 static int g_log_stderr = 0;
 void rawpipes_set_log_stderr(int enable) { g_log_stderr = enable ? 1 : 0; }

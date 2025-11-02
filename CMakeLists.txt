@@ -28,9 +28,9 @@ endif()
 
 set(SOURCE_FILES
         src/utils.c src/pty.c src/protocol.c src/http.c src/server.c
-        src/launch_cmd.c src/raw_pipes_protocol.c
-        src/url_args.c
-        src/url_args.h
+        src/launccmd.c src/pipeprotocol.c
+        src/urlargs.c
+        src/urlargs.h
 )
 
 include(FindPackageHandleStandardArgs)
@@ -46,8 +46,7 @@ endif()
 
 find_package(ZLIB REQUIRED)
 find_package(Libwebsockets 3.2.0 REQUIRED)
-
-# Use pkg-config for json-c (DO THIS BEFORE building INCLUDE/LINK lists)
+find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONC REQUIRED json-c)
 
@@ -99,9 +98,13 @@ endif()
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 target_link_directories(${PROJECT_NAME} PRIVATE ${JSONC_LIBRARY_DIRS})
 target_include_directories(${PROJECT_NAME} PUBLIC ${INCLUDE_DIRS})
-target_link_libraries(${PROJECT_NAME} ${LINK_LIBS})
 target_compile_options(${PROJECT_NAME} PRIVATE ${EXTRA_CFLAGS})
 target_link_options(${PROJECT_NAME}    PRIVATE ${EXTRA_LDFLAGS})
+target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+        ${LINK_LIBS}
+        Threads::Threads
+)
 
 target_compile_definitions(${PROJECT_NAME} PUBLIC
         TTYD_VERSION="${TTYD_VERSION}"

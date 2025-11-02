@@ -2,7 +2,8 @@
 // Created by Andrea Cocito on 02/11/25.
 //
 #include <stddef.h>
-#include "launch_cmd.h"
+
+#include "launccmd.h"
 
 static const char *default_shell[] = { "/bin/sh", "-c", "exec /bin/sh", NULL };
 static const char * const *g_launch_argv = default_shell;
