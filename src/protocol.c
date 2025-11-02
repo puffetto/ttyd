@@ -1,5 +1,13 @@
 #include <errno.h>
-#include <json.h>
+#if defined(__has_include)
+#  if __has_include(<json-c/json.h>)
+#    include <json-c/json.h>
+#  else
+#    include <json.h>
+#  endif
+#else
+#  include <json-c/json.h>
+#endif
 #include <libwebsockets.h>
 #include <stdbool.h>
 #include <stdio.h>

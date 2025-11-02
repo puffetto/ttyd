@@ -1,8 +1,20 @@
 #include "server.h"
+#include "raw_pipes_protocol.h"
+#include "launch_cmd.h"
 
 #include <errno.h>
 #include <getopt.h>
-#include <json.h>
+
+#if defined(__has_include)
+#  if __has_include(<json-c/json.h>)
+#    include <json-c/json.h>
+#  else
+#    include <json.h>
+#  endif
+#else
+#  include <json-c/json.h>
+#endif
+
 #include <libwebsockets.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -28,6 +40,7 @@ extern int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void 
 // websocket protocols
 static const struct lws_protocols protocols[] = {{"http-only", callback_http, sizeof(struct pss_http), 0},
                                                  {"tty", callback_tty, sizeof(struct pss_tty), 0},
+                                                 {"raw", callback_ttyd_raw_pipes,sizeof(struct pss_raw),0},
                                                  {NULL, NULL, 0, 0}};
 
 #ifndef LWS_WITHOUT_EXTENSIONS
@@ -83,8 +96,9 @@ static const struct option options[] = {{"port", required_argument, NULL, 'p'},
                                         {"debug", required_argument, NULL, 'd'},
                                         {"version", no_argument, NULL, 'v'},
                                         {"help", no_argument, NULL, 'h'},
+                                        {"log-stderr", no_argument, NULL, 'l'},
                                         {NULL, 0, 0, 0}};
-static const char *opt_string = "p:i:U:c:H:u:g:s:w:I:b:P:f:6aSC:K:A:Wt:T:Om:oqBd:vh";
+static const char *opt_string = "lp:i:U:c:H:u:g:s:w:I:b:P:f:6aSC:K:A:Wt:T:Om:oqBd:vh";
 
 static void print_help() {
   // clang-format off
@@ -108,6 +122,7 @@ static void print_help() {
           "    -t, --client-option     Send option to client (format: key=value), repeat to add more options\n"
           "    -T, --terminal-type     Terminal type to report, default: xterm-256color\n"
           "    -O, --check-origin      Do not allow websocket connection from different origin\n"
+          "    -l, --log-stderr        Send child’s stderr to ttyd’s stderr (line-buffered, prefix \"[child:<pid>] \")\n"
           "    -m, --max-clients       Maximum clients to support (default: 0, no limit)\n"
           "    -o, --once              Accept only one client and exit on disconnection\n"
           "    -q, --exit-no-conn      Exit on all clients disconnection\n"
@@ -171,8 +186,10 @@ static struct server *server_new(int argc, char **argv, int start) {
   ts->sig_code = SIGHUP;
   sprintf(ts->terminal_type, "%s", "xterm-256color");
   get_sig_name(ts->sig_code, ts->sig_name, sizeof(ts->sig_name));
-  if (start == argc) return ts;
-
+  if (start == argc) {
+    ttyd_launch_set_argv(NULL);
+    return ts;
+  }
   int cmd_argc = argc - start;
   char **cmd_argv = &argv[start];
   ts->argv = xmalloc(sizeof(char *) * (cmd_argc + 1));
@@ -185,6 +202,8 @@ static struct server *server_new(int argc, char **argv, int start) {
   }
   ts->argv[cmd_argc] = NULL;
   ts->argc = cmd_argc;
+
+  ttyd_launch_set_argv((const char * const *)ts->argv);
 
   ts->command = xmalloc(cmd_len + 1);
   char *ptr = ts->command;
@@ -516,6 +535,9 @@ int main(int argc, char **argv) {
           struct json_object *obj = json_tokener_parse(value);
           json_object_object_add(client_prefs, key, obj != NULL ? obj : json_object_new_string(value));
         }
+        break;
+      case 'l':
+        rawpipes_set_log_stderr(1);
         break;
       default:
         print_help();
