@@ -7,7 +7,6 @@
 #include "wspipe.h"
 // ReSharper disable once CppUnusedIncludeDirective
 #include <fcntl.h>
-#include <libwebsockets.h>
 #include <limits.h>  // INT_MAX
 #include <signal.h>
 #include <stdint.h>
@@ -16,6 +15,7 @@
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <strings.h>
 
 #include "runcmd.h"
 #include "server.h"
@@ -27,14 +27,15 @@ void set_errlog(int enable) { g_log_stderr = enable ? 1 : 0; }
 #define WS_MAX_CHUNK 32768
 #define SUL_POLL_USEC 1000
 
+/* Build a temporary argv vector that borrows pointers from base + extra */
 static char **merge_argv(const char *const *base, char *const *extra, int extra_count) {
   int basec = 0;
   while (base[basec]) basec++;
 
-  char **out = malloc(((size_t)basec + (size_t)extra_count + 1) * sizeof(char *));
+  char **out = (char **)malloc(((size_t)basec + (size_t)extra_count + 1) * sizeof(char *));
   if (!out) return NULL;
 
-  for (int i = 0; i < basec; ++i) out[i] = (char *)base[i];      // borrow
+  for (int i = 0; i < basec; ++i) out[i] = (char *)base[i];        // borrow
   for (int j = 0; j < extra_count; ++j) out[basec + j] = extra[j]; // borrow
   out[basec + extra_count] = NULL;
   return out;
@@ -43,8 +44,8 @@ static char **merge_argv(const char *const *base, char *const *extra, int extra_
 static void nb_set(int fd) {
   if (fd < 0) return;
   int fl = fcntl(fd, F_GETFL, 0);
-  if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-  fcntl(fd, F_SETFD, fcntl(fd, F_GETFD, 0) | FD_CLOEXEC);
+  if (fl >= 0) (void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+  (void)fcntl(fd, F_SETFD, fcntl(fd, F_GETFD, 0) | FD_CLOEXEC);
 }
 
 static int spawn_pipes(const char *const *argv, pid_t *out_pid, int *fd_in_w, int *fd_out_r, int *fd_err_r) {
@@ -68,9 +69,9 @@ static int spawn_pipes(const char *const *argv, pid_t *out_pid, int *fd_in_w, in
     if (server) {
       if (server->cwd) (void)chdir(server->cwd);
     }
-    dup2(in_p[0], 0);
-    dup2(out_p[1], 1);
-    dup2(err_p[1], 2);
+    (void)dup2(in_p[0], 0);
+    (void)dup2(out_p[1], 1);
+    (void)dup2(err_p[1], 2);
     close(in_p[1]);
     close(out_p[0]);
     close(err_p[0]);
@@ -78,7 +79,8 @@ static int spawn_pipes(const char *const *argv, pid_t *out_pid, int *fd_in_w, in
     close(out_p[1]);
     close(err_p[1]);
 
-    execvp(argv[0], (char *const *)argv);
+    if (argv && argv[0])
+      execvp(argv[0], (char *const *)argv);
     _exit(127);
   }
 
@@ -96,27 +98,41 @@ static int spawn_pipes(const char *const *argv, pid_t *out_pid, int *fd_in_w, in
   return 0;
 }
 
-static void write_stderr(pid_t pid, const char *buf, size_t n) {
-  char prefix[64];
-  int plen = snprintf(prefix, sizeof(prefix), "[child:%d] ", (int)pid);
-  struct iovec iov[2] = {{.iov_base = prefix, .iov_len = (size_t)plen}, {.iov_base = (void *)buf, .iov_len = n}};
-  (void)writev(STDERR_FILENO, iov, 2);
+/* ----- stderr → LWS logging (line buffered, consistent with ttyd) ----- */
+
+static void flush_stderr_line(struct pss_raw *pss) {
+  if (!pss->err_used) return;
+  size_t used = pss->err_used;
+
+  /* strip one trailing '\n' if present */
+  if (used && pss->err_line[used - 1] == '\n') used--;
+
+  if (used >= sizeof(pss->err_line)) used = sizeof(pss->err_line) - 1;
+  pss->err_line[used] = '\0';
+
+  /* child stderr is a warning in ttyd */
+  lwsl_warn("[child:%d] %s\n", (int)pss->pid, pss->err_line);
+
+  pss->err_used = 0;
 }
 
 static void accumulate_stderr(struct pss_raw *pss, const uint8_t *p, size_t n) {
   while (n--) {
     char c = (char)*p++;
-    pss->err_line[pss->err_used++] = c;
-    if (c == '\n' || pss->err_used == sizeof(pss->err_line)) {
-      write_stderr(pss->pid, pss->err_line, pss->err_used);
-      pss->err_used = 0;
+    if (pss->err_used < sizeof(pss->err_line) - 1) {
+      pss->err_line[pss->err_used++] = c;
+    }
+    if (c == '\n' || pss->err_used == sizeof(pss->err_line) - 1) {
+      flush_stderr_line(pss);
     }
   }
 }
 
+/* ----- data pump helpers ----- */
+
 static int pump_fd_to_wsbuf(struct pss_raw *pss, int fd) {
   if (pss->ws_len) return 0; /* wait for WRITEABLE to flush previous */
-  unsigned char *p = malloc(LWS_PRE + WS_MAX_CHUNK);
+  unsigned char *p = (unsigned char *)malloc(LWS_PRE + WS_MAX_CHUNK);
   if (!p) return 0;
   ssize_t n = read(fd, p + LWS_PRE, WS_MAX_CHUNK);
   if (n > 0) {
@@ -124,9 +140,8 @@ static int pump_fd_to_wsbuf(struct pss_raw *pss, int fd) {
     pss->ws_len = (size_t)n;
     lws_callback_on_writable(pss->wsi);
     return 1;
-  } else {
-    free(p);
   }
+  free(p);
   return 0;
 }
 
@@ -134,17 +149,22 @@ static void pump_err(struct pss_raw *pss) {
   uint8_t tmp[WS_MAX_CHUNK];
   ssize_t n = read(pss->fd_err_r, tmp, sizeof(tmp));
   if (n <= 0) return;
+
   if (g_log_stderr) {
     accumulate_stderr(pss, tmp, (size_t)n);
-  } else {
-    if (!pss->ws_len) {
-      pss->ws_buf = malloc(LWS_PRE + (size_t)n);
-      if (!pss->ws_buf) return;
-      memcpy(pss->ws_buf + LWS_PRE, tmp, (size_t)n);
-      pss->ws_len = (size_t)n;
-      lws_callback_on_writable(pss->wsi);
-    }
+    return;
   }
+
+  if (pss->ws_len) {
+    // Already a frame queued: just drop silently (explicit)
+    // Optional: lwsl_debug("stderr chunk dropped (%zd bytes)\n", n);
+    return;
+  }
+  pss->ws_buf = (unsigned char *)malloc(LWS_PRE + (size_t)n);
+  if (!pss->ws_buf) return;
+  memcpy(pss->ws_buf + LWS_PRE, tmp, (size_t)n);
+  pss->ws_len = (size_t)n;
+  lws_callback_on_writable(pss->wsi);
 }
 
 static void sul_poll_cb(lws_sorted_usec_list_t *sul) {
@@ -156,15 +176,23 @@ static void sul_poll_cb(lws_sorted_usec_list_t *sul) {
 
   if (!pss->child_dead) {
     int st;
+    for (;;) {
     pid_t r = waitpid(pss->pid, &st, WNOHANG);
+      if (r == 0) break;                  // still running
     if (r == pss->pid) {
       pss->child_dead = 1;
       lws_close_reason(pss->wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
       lws_callback_on_writable(pss->wsi);
+        break;
+      }
+      if (r < 0 && errno == EINTR) continue;
+      break;
     }
   }
   lws_sul_schedule(lws_get_context(pss->wsi), 0, &pss->sul, sul_poll_cb, SUL_POLL_USEC);
 }
+
+/* ----- protocol callback ----- */
 
 // ReSharper disable once CppParameterMayBeConstPtrOrRef
 int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
@@ -181,31 +209,28 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
       }
 
       const char *const *base = ttyd_runcmd();
-      char **tmp_vec = NULL;   // borrowing vector; we always free this when allocated
+      char **tmp_vec = NULL;   // borrowing vector; always free when allocated
       const char *const *argv_for_spawn = base;
 
       if (pss->argv) {
         tmp_vec = merge_argv(base, pss->argv, pss->argc);
         if (!tmp_vec) {
-          // OOM: also release collected args because we’re bailing out.
           ttyd_free_argv(pss->argv);
           pss->argv = NULL;
           pss->argc = 0;
           return -1;
         }
-        argv_for_spawn = (const char *const *)tmp_vec;  // points to borrowed entries
+        argv_for_spawn = (const char *const *)tmp_vec;
       }
 
       int rc = spawn_pipes(argv_for_spawn, &pss->pid, &pss->fd_in_w, &pss->fd_out_r, &pss->fd_err_r);
 
       if (tmp_vec) {
-        free(tmp_vec);   // free the vector itself; strings are owned by base/pss->argv
+        free(tmp_vec);   // free the vector itself; strings are owned by base / pss->argv
         tmp_vec = NULL;
       }
 
       if (rc < 0) {
-        // We’re aborting the connection before CLOSED/WSI_DESTROY fires, so
-        // make sure the collected args aren’t leaked.
         if (pss->argv) {
           ttyd_free_argv(pss->argv);
           pss->argv = NULL;
@@ -221,6 +246,11 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
     }
 
     case LWS_CALLBACK_RECEIVE:
+      /* Honor --writable: if not set, silently ignore client input (read-only). */
+      if (!server || !server->writable) {
+        break;
+      }
+
       if (pss->fd_in_w >= 0 && len) {
         const uint8_t *p = (const uint8_t *)in;
         size_t left = len;
@@ -247,7 +277,7 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
     case LWS_CALLBACK_CLOSED:
     case LWS_CALLBACK_WSI_DESTROY:
       lws_sul_cancel(&pss->sul);
-      if (pss->fd_in_w >= 0) close(pss->fd_in_w);
+      if (pss->fd_in_w  >= 0) close(pss->fd_in_w);
       if (pss->fd_out_r >= 0) close(pss->fd_out_r);
       if (pss->fd_err_r >= 0) close(pss->fd_err_r);
       if (pss->pid > 0) {
@@ -261,8 +291,7 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
         pss->argc = 0;
       }
       if (g_log_stderr && pss->err_used) {
-        write_stderr(pss->pid, pss->err_line, pss->err_used);
-        pss->err_used = 0;
+        flush_stderr_line(pss);
       }
       if (pss->ws_buf) {
         free(pss->ws_buf);
@@ -279,6 +308,7 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
         exit(0);
       }
       break;
+
     case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION: {
       if (server->once && server->client_count > 0) return 1;
       if (server->max_clients > 0 && server->client_count >= server->max_clients) return 1;
@@ -298,10 +328,8 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
         if (strcasecmp(expect, host) != 0) return 1;
       }
 
-
       if (server->auth_header) {
         char auth_user[128];
-
         size_t name_sz = strlen(server->auth_header);
         if (name_sz > (size_t)INT_MAX)
           return 1;  // absurd header name
@@ -309,9 +337,9 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
         int rc = lws_hdr_custom_copy(
             wsi,
             auth_user,
-            (int)sizeof(auth_user),          // size_t -> int
+            (int)sizeof(auth_user),
             server->auth_header,
-            (int)name_sz                     // size_t -> int
+            (int)name_sz
         );
         if (rc <= 0)
           return 1;
@@ -323,8 +351,6 @@ int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user,
         if (strcmp(hdr + 6, server->credential) != 0)
           return 1;
       }
-
-
       return 0;
     }
 
