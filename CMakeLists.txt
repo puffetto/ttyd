@@ -32,8 +32,8 @@ set(SOURCE_FILES
         src/protocol.c
         src/http.c
         src/server.c
-        src/launccmd.c
-        src/pipeprotocol.c
+        src/runcmd.c
+        src/wspipe.c
         src/urlargs.c
 )
 

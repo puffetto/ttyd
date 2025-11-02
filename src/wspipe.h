@@ -19,9 +19,9 @@ struct pss_raw {
   int argc;
 };
 
-void rawpipes_set_log_stderr(int enable);
+void set_errlog(int enable);
 
-int callback_ttyd_raw_pipes(struct lws *wsi,
+int callback_pipe(struct lws *wsi,
                             enum lws_callback_reasons reason,
                             void *user, void *in, size_t len);
 

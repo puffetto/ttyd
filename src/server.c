@@ -3,8 +3,8 @@
 #include <errno.h>
 #include <getopt.h>
 
-#include "launccmd.h"
-#include "pipeprotocol.h"
+#include "runcmd.h"
+#include "wspipe.h"
 
 #if defined(__has_include)
 #  if __has_include(<json-c/json.h>)
@@ -41,7 +41,7 @@ extern int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void 
 // websocket protocols
 static const struct lws_protocols protocols[] = {{"http-only", callback_http, sizeof(struct pss_http), 0},
                                                  {"tty", callback_tty, sizeof(struct pss_tty), 0},
-                                                 {"pipe", callback_ttyd_raw_pipes,sizeof(struct pss_raw),0},
+                                                 {"pipe", callback_pipe,sizeof(struct pss_raw),0},
                                                  {NULL, NULL, 0, 0}};
 
 #ifndef LWS_WITHOUT_EXTENSIONS
@@ -188,7 +188,7 @@ static struct server *server_new(int argc, char **argv, int start) {
   sprintf(ts->terminal_type, "%s", "xterm-256color");
   get_sig_name(ts->sig_code, ts->sig_name, sizeof(ts->sig_name));
   if (start == argc) {
-    ttyd_launch_set_argv(NULL);
+    ttyd_setargv(NULL);
     return ts;
   }
   int cmd_argc = argc - start;
@@ -204,7 +204,7 @@ static struct server *server_new(int argc, char **argv, int start) {
   ts->argv[cmd_argc] = NULL;
   ts->argc = cmd_argc;
 
-  ttyd_launch_set_argv((const char * const *)ts->argv);
+  ttyd_setargv((const char * const *)ts->argv);
 
   ts->command = xmalloc(cmd_len + 1);
   char *ptr = ts->command;
@@ -538,7 +538,7 @@ int main(int argc, char **argv) {
         }
         break;
       case 'l':
-        rawpipes_set_log_stderr(1);
+        set_errlog(1);
         break;
       default:
         print_help();

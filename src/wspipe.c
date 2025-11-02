@@ -4,7 +4,7 @@
 
 #include <errno.h>
 
-#include "pipeprotocol.h"
+#include "wspipe.h"
 // ReSharper disable once CppUnusedIncludeDirective
 #include <fcntl.h>
 #include <libwebsockets.h>
@@ -17,17 +17,17 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "launccmd.h"
+#include "runcmd.h"
 #include "server.h"
 #include "urlargs.h"
 
 static int g_log_stderr = 0;
-void rawpipes_set_log_stderr(int enable) { g_log_stderr = enable ? 1 : 0; }
+void set_errlog(int enable) { g_log_stderr = enable ? 1 : 0; }
 
 #define WS_MAX_CHUNK 32768
 #define SUL_POLL_USEC 1000
 
-static char **merge_argv_borrow(const char *const *base, char *const *extra, int extra_count) {
+static char **merge_argv(const char *const *base, char *const *extra, int extra_count) {
   int basec = 0;
   while (base[basec]) basec++;
 
@@ -96,19 +96,19 @@ static int spawn_pipes(const char *const *argv, pid_t *out_pid, int *fd_in_w, in
   return 0;
 }
 
-static void stderr_prefix_write(pid_t pid, const char *buf, size_t n) {
+static void write_stderr(pid_t pid, const char *buf, size_t n) {
   char prefix[64];
   int plen = snprintf(prefix, sizeof(prefix), "[child:%d] ", (int)pid);
   struct iovec iov[2] = {{.iov_base = prefix, .iov_len = (size_t)plen}, {.iov_base = (void *)buf, .iov_len = n}};
   (void)writev(STDERR_FILENO, iov, 2);
 }
 
-static void stderr_line_accum(struct pss_raw *pss, const uint8_t *p, size_t n) {
+static void accumulate_stderr(struct pss_raw *pss, const uint8_t *p, size_t n) {
   while (n--) {
     char c = (char)*p++;
     pss->err_line[pss->err_used++] = c;
     if (c == '\n' || pss->err_used == sizeof(pss->err_line)) {
-      stderr_prefix_write(pss->pid, pss->err_line, pss->err_used);
+      write_stderr(pss->pid, pss->err_line, pss->err_used);
       pss->err_used = 0;
     }
   }
@@ -135,7 +135,7 @@ static void pump_err(struct pss_raw *pss) {
   ssize_t n = read(pss->fd_err_r, tmp, sizeof(tmp));
   if (n <= 0) return;
   if (g_log_stderr) {
-    stderr_line_accum(pss, tmp, (size_t)n);
+    accumulate_stderr(pss, tmp, (size_t)n);
   } else {
     if (!pss->ws_len) {
       pss->ws_buf = malloc(LWS_PRE + (size_t)n);
@@ -167,7 +167,7 @@ static void sul_poll_cb(lws_sorted_usec_list_t *sul) {
 }
 
 // ReSharper disable once CppParameterMayBeConstPtrOrRef
-int callback_ttyd_raw_pipes(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
+int callback_pipe(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
   struct pss_raw *pss = (struct pss_raw *)user;
 
   switch (reason) {
@@ -180,12 +180,12 @@ int callback_ttyd_raw_pipes(struct lws *wsi, enum lws_callback_reasons reason, v
         pss->argv = ttyd_collect_url_args(wsi, &pss->argc);  // owns strings
       }
 
-      const char *const *base = ttyd_launch_argv();
+      const char *const *base = ttyd_runcmd();
       char **tmp_vec = NULL;   // borrowing vector; we always free this when allocated
       const char *const *argv_for_spawn = base;
 
       if (pss->argv) {
-        tmp_vec = merge_argv_borrow(base, pss->argv, pss->argc);
+        tmp_vec = merge_argv(base, pss->argv, pss->argc);
         if (!tmp_vec) {
           // OOM: also release collected args because we’re bailing out.
           ttyd_free_argv(pss->argv);
@@ -261,7 +261,7 @@ int callback_ttyd_raw_pipes(struct lws *wsi, enum lws_callback_reasons reason, v
         pss->argc = 0;
       }
       if (g_log_stderr && pss->err_used) {
-        stderr_prefix_write(pss->pid, pss->err_line, pss->err_used);
+        write_stderr(pss->pid, pss->err_line, pss->err_used);
         pss->err_used = 0;
       }
       if (pss->ws_buf) {
