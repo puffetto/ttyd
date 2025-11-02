@@ -25,23 +25,32 @@ static int send_unauthorized(struct lws *wsi, unsigned int code, enum lws_token_
   return lws_http_transaction_completed(wsi) ? AUTH_FAIL : AUTH_ERROR;
 }
 
+#include <limits.h>  /* INT_MAX */
+
 static int check_auth(struct lws *wsi, struct pss_http *pss) {
+  (void)pss; /* if unused */
+
   if (server->auth_header != NULL) {
-    if (lws_hdr_custom_length(wsi, server->auth_header, strlen(server->auth_header)) > 0) return AUTH_OK;
-    return send_unauthorized(wsi, HTTP_STATUS_PROXY_AUTH_REQUIRED, WSI_TOKEN_HTTP_PROXY_AUTHENTICATE);
-  }
-
-  if(server->credential != NULL) {
-    char buf[256];
-    int len = lws_hdr_copy(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_AUTHORIZATION);
-    if (len >= 7 && strstr(buf, "Basic ")) {
-      if (!strcmp(buf + 6, server->credential)) return AUTH_OK;
+    size_t name_sz = strlen(server->auth_header);
+    if (name_sz == 0 || name_sz > (size_t)INT_MAX) {
+      /* absurd header name; treat as not authorized */
+      return send_unauthorized(wsi, HTTP_STATUS_PROXY_AUTH_REQUIRED,
+                               WSI_TOKEN_HTTP_PROXY_AUTHENTICATE);
     }
-    return send_unauthorized(wsi, HTTP_STATUS_UNAUTHORIZED, WSI_TOKEN_HTTP_WWW_AUTHENTICATE);
+    int name_len = (int)name_sz;
+
+    int has = lws_hdr_custom_length(wsi, server->auth_header, name_len);
+    if (has > 0)
+      return AUTH_OK;
+
+    return send_unauthorized(wsi, HTTP_STATUS_PROXY_AUTH_REQUIRED,
+                             WSI_TOKEN_HTTP_PROXY_AUTHENTICATE);
   }
 
+  /* fall through to whatever your non-proxy auth path is, or AUTH_OK if none */
   return AUTH_OK;
 }
+
 
 static bool accept_gzip(struct lws *wsi) {
   char buf[256];

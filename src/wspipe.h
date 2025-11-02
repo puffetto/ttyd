@@ -1,5 +1,7 @@
 #pragma once
+// ReSharper disable once CppUnusedIncludeDirective
 #include <stddef.h>       /* size_t */
+// ReSharper disable once CppUnusedIncludeDirective
 #include <sys/types.h>    /* pid_t, u_char, etc (macOS needs this before lws) */
 #include <libwebsockets.h>
 
