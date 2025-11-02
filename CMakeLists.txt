@@ -27,13 +27,8 @@ else()
 endif()
 
 set(SOURCE_FILES
-        src/utils.c
-        src/pty.c
-        src/protocol.c
-        src/http.c
-        src/server.c
-        src/runcmd.c
-        src/wspipe.c
+        src/utils.c src/pty.c src/protocol.c src/http.c src/server.c
+        src/runcmd.c src/wspipe.c
         src/urlargs.c
 )
 
@@ -51,15 +46,42 @@ endif()
 find_package(ZLIB REQUIRED)
 find_package(Libwebsockets 3.2.0 REQUIRED)
 find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(JSONC REQUIRED json-c)
 
-# Aggregate include/link lists once (now JSONC_* are defined)
+# Prefer pkg-config for json-c, but fall back to manual discovery
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(JSONC QUIET json-c)
+endif()
+
+if(NOT JSONC_FOUND)
+    message(STATUS "pkg-config did not find json-c; trying manual discovery")
+    # Common FreeBSD paths first
+    find_path(JSONC_INCLUDE_DIRS
+            NAMES json.h
+            PATH_SUFFIXES json-c
+            HINTS /usr/local/include /usr/include
+    )
+    find_library(JSONC_LIBRARIES
+            NAMES json-c
+            HINTS /usr/local/lib /usr/lib
+    )
+    if(JSONC_INCLUDE_DIRS AND JSONC_LIBRARIES)
+        set(JSONC_FOUND TRUE)
+        set(JSONC_CFLAGS_OTHER "")
+        set(JSONC_LDFLAGS_OTHER "")
+        message(STATUS "json-c found without pkg-config")
+    else()
+        message(FATAL_ERROR "json-c not found. Install json-c or set PKG_CONFIG_PATH.")
+    endif()
+endif()
+
+# Aggregate include/link lists once
 set(INCLUDE_DIRS
         ${ZLIB_INCLUDE_DIR}
         ${LIBWEBSOCKETS_INCLUDE_DIRS}
         ${LIBUV_INCLUDE_DIRS}
         ${JSONC_INCLUDE_DIRS}
+        ${JSONC_INCLUDE_DIRS} # covers manual case too
 )
 set(LINK_LIBS
         ${ZLIB_LIBRARIES}
@@ -100,10 +122,20 @@ endif()
 
 # ---- target ----
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
-target_link_directories(${PROJECT_NAME} PRIVATE ${JSONC_LIBRARY_DIRS})
+
+# Some pkg-configs populate JSONC_LIBRARY_DIRS; only add if present
+if(JSONC_LIBRARY_DIRS)
+    target_link_directories(${PROJECT_NAME} PRIVATE ${JSONC_LIBRARY_DIRS})
+endif()
+
 target_include_directories(${PROJECT_NAME} PUBLIC ${INCLUDE_DIRS})
-target_compile_options(${PROJECT_NAME} PRIVATE ${EXTRA_CFLAGS})
-target_link_options(${PROJECT_NAME}    PRIVATE ${EXTRA_LDFLAGS})
+if(EXTRA_CFLAGS)
+    target_compile_options(${PROJECT_NAME} PRIVATE ${EXTRA_CFLAGS})
+endif()
+if(EXTRA_LDFLAGS)
+    target_link_options(${PROJECT_NAME}    PRIVATE ${EXTRA_LDFLAGS})
+endif()
+
 target_link_libraries(${PROJECT_NAME}
         PRIVATE
         ${LINK_LIBS}
