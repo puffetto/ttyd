@@ -16,6 +16,7 @@
 
 #include "pty.h"
 #include "server.h"
+#include "url_args.h"
 #include "utils.h"
 
 // initial message list
@@ -243,14 +244,16 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       pss->lws_close_status = LWS_CLOSE_STATUS_NOSTATUS;
 
       if (server->url_arg) {
-        while (lws_hdr_copy_fragment(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_URI_ARGS, n++) > 0) {
-          if (strncmp(buf, "arg=", 4) == 0) {
-            pss->args = xrealloc(pss->args, (pss->argc + 1) * sizeof(char *));
-            pss->args[pss->argc] = strdup(&buf[4]);
-            pss->argc++;
-          }
+        int extra = 0;
+        char **args = ttyd_collect_url_args(wsi, &extra);
+        if (extra > 0 && args) {
+          pss->args = xrealloc(pss->args, (pss->argc + extra) * sizeof(char *));
+          for (int i = 0; i < extra; ++i)
+            pss->args[pss->argc++] = args[i];  /* steal ownership */
+          free(args); /* free just the vector, not the strings */
         }
       }
+
 
       server->client_count++;
 

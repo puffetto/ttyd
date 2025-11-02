@@ -40,7 +40,7 @@ extern int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void 
 // websocket protocols
 static const struct lws_protocols protocols[] = {{"http-only", callback_http, sizeof(struct pss_http), 0},
                                                  {"tty", callback_tty, sizeof(struct pss_tty), 0},
-                                                 {"raw", callback_ttyd_raw_pipes,sizeof(struct pss_raw),0},
+                                                 {"pipe", callback_ttyd_raw_pipes,sizeof(struct pss_raw),0},
                                                  {NULL, NULL, 0, 0}};
 
 #ifndef LWS_WITHOUT_EXTENSIONS
@@ -330,7 +330,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 #endif
-
+  signal(SIGPIPE, SIG_IGN);
   int start = calc_command_start(argc, argv);
   server = server_new(argc, argv, start);
 

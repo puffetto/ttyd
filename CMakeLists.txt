@@ -29,6 +29,8 @@ endif()
 set(SOURCE_FILES
         src/utils.c src/pty.c src/protocol.c src/http.c src/server.c
         src/launch_cmd.c src/raw_pipes_protocol.c
+        src/url_args.c
+        src/url_args.h
 )
 
 include(FindPackageHandleStandardArgs)

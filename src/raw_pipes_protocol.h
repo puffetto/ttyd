@@ -15,6 +15,8 @@ struct pss_raw {
   size_t err_used;
   lws_sorted_usec_list_t sul;  /* libwebsockets micro-timer */
   int child_dead;
+  char **argv;
+  int argc;
 };
 
 void rawpipes_set_log_stderr(int enable);
