@@ -81,7 +81,6 @@ set(INCLUDE_DIRS
         ${LIBWEBSOCKETS_INCLUDE_DIRS}
         ${LIBUV_INCLUDE_DIRS}
         ${JSONC_INCLUDE_DIRS}
-        ${JSONC_INCLUDE_DIRS} # covers manual case too
 )
 set(LINK_LIBS
         ${ZLIB_LIBRARIES}
