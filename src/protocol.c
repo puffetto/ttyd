@@ -205,7 +205,6 @@ static bool check_auth(struct lws *wsi, struct pss_tty *pss) {
 
 int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
   struct pss_tty *pss = (struct pss_tty *)user;
-  char buf[256];
   size_t n = 0;
 
   switch (reason) {

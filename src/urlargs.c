@@ -3,6 +3,7 @@
 //
 
 #include <stdlib.h>
+// ReSharper disable once CppUnusedIncludeDirective
 #include <string.h>
 
 #include "urlargs.h"

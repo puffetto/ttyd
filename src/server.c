@@ -17,6 +17,7 @@
 #endif
 
 #include <libwebsockets.h>
+// ReSharper disable once CppUnusedIncludeDirective
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -413,15 +414,31 @@ int main(int argc, char **argv) {
         strncpy(socket_owner, optarg, sizeof(socket_owner) - 1);
         socket_owner[sizeof(socket_owner) - 1] = '\0';
         break;
-      case 'c':
+      case 'c': {
         if (strchr(optarg, ':') == NULL) {
           fprintf(stderr, "ttyd: invalid credential, format: username:password\n");
           return -1;
         }
-        char b64_text[256];
-        lws_b64_encode_string(optarg, strlen(optarg), b64_text, sizeof(b64_text));
-        server->credential = strdup(b64_text);
+
+        size_t in_sz = strlen(optarg);
+        if (in_sz > (size_t)INT_MAX) {
+          fprintf(stderr, "ttyd: credential too long\n");
+          return -1;
+        }
+
+        size_t out_sz = ((in_sz + 2) / 3) * 4 + 1;
+        char *b64 = xmalloc(out_sz);
+
+        int wrote = lws_b64_encode_string(optarg, (int)in_sz, b64, (int)out_sz);
+        if (wrote <= 0) {
+          free(b64);
+          fprintf(stderr, "ttyd: base64 encode failed\n");
+          return -1;
+        }
+
+        server->credential = b64;
         break;
+      }
       case 'H':
         server->auth_header = strdup(optarg);
         break;
