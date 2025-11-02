@@ -27,10 +27,14 @@ else()
 endif()
 
 set(SOURCE_FILES
-        src/utils.c src/pty.c src/protocol.c src/http.c src/server.c
-        src/launccmd.c src/pipeprotocol.c
+        src/utils.c
+        src/pty.c
+        src/protocol.c
+        src/http.c
+        src/server.c
+        src/launccmd.c
+        src/pipeprotocol.c
         src/urlargs.c
-        src/urlargs.h
 )
 
 include(FindPackageHandleStandardArgs)
