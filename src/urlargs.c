@@ -1,50 +1,81 @@
-//
-// Created by Andrea Cocito on 02/11/25.
-//
-
-#include <stdlib.h>
-// ReSharper disable once CppUnusedIncludeDirective
-#include <string.h>
-
 #include "urlargs.h"
 
-/* libwebsockets’ simple in-place URL decoder */
-static int urldecode_inplace(char *s){
-  size_t n = strlen(s);
-  int in_len = (int)strlen(s);
-  int out_len = lws_urldecode(s, s, in_len);  // dst, src, len
-  if (out_len < 0) return -1;
-  s[out_len] = '\0';
-  s[n] = '\0';
-  return 0;
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <libwebsockets.h>
+
+/* percent-decode in place; returns length */
+static size_t pct_decode(char *s) {
+  char *r = s, *w = s;
+  while (*r) {
+    if (*r == '%' && isxdigit((unsigned char)r[1]) && isxdigit((unsigned char)r[2])) {
+      int hi = r[1] <= '9' ? r[1]-'0' : (tolower((unsigned char)r[1])-'a'+10);
+      int lo = r[2] <= '9' ? r[2]-'0' : (tolower((unsigned char)r[2])-'a'+10);
+      *w++ = (char)((hi<<4) | lo);
+      r += 3;
+    } else if (*r == '+') {
+      *w++ = ' ';
+      r++;
+    } else {
+      *w++ = *r++;
+    }
+  }
+  *w = '\0';
+  return (size_t)(w - s);
 }
 
+/* Collect ?arg=... values into a NULL-terminated argv.
+ * Returns NULL and sets *argc_out=0 if none.
+ */
 char **ttyd_collect_url_args(struct lws *wsi, int *argc_out) {
   if (argc_out) *argc_out = 0;
 
-  /* Upper bound: small fixed cap to avoid unbounded malloc churn */
-  enum { MAX_ARGS = 128 };
-  char *tmp[MAX_ARGS];
-  int cnt = 0;
+  /* Iterate fragments of the query string */
+  int frag = 0;
+  char kv[512];
 
-  char frag[512];
+  /* First pass: count */
+  int count = 0;
+  for (;;) {
+    int n = lws_hdr_copy_fragment(wsi, kv, sizeof(kv), WSI_TOKEN_HTTP_URI_ARGS, frag++);
+    if (n <= 0) break; /* no more */
+    /* kv looks like "key=value" or just "key" */
+    char *eq = memchr(kv, '=', (size_t)n);
+    size_t keylen = eq ? (size_t)(eq - kv) : (size_t)n;
+    if (keylen == 3 && strncmp(kv, "arg", 3) == 0) {
+      count++;
+    }
+  }
+  if (count == 0) return NULL;
+
+  /* Second pass: extract values */
+  char **argv = (char **)calloc((size_t)count + 1, sizeof(char *));
+  if (!argv) return NULL;
+
+  frag = 0;
   int idx = 0;
-  while (lws_hdr_copy_fragment(wsi, frag, (int)sizeof(frag), WSI_TOKEN_HTTP_URI_ARGS, idx++) > 0) {
-    char *eq = strchr(frag, '=');
-    if (!eq) continue;
-    *eq++ = '\0';
-    if (strcmp(frag, "arg") != 0) continue;
-    if (urldecode_inplace(eq) != 0) continue;
-    if (cnt < MAX_ARGS - 1) tmp[cnt++] = strdup(eq);
+  for (;;) {
+    int n = lws_hdr_copy_fragment(wsi, kv, sizeof(kv), WSI_TOKEN_HTTP_URI_ARGS, frag++);
+    if (n <= 0) break;
+    char *eq = memchr(kv, '=', (size_t)n);
+    size_t keylen = eq ? (size_t)(eq - kv) : (size_t)n;
+    if (!(keylen == 3 && strncmp(kv, "arg", 3) == 0))
+      continue;
+
+    const char *val = eq ? (eq + 1) : "";
+    /* duplicate and percent-decode */
+    char *dup = strdup(val ? val : "");
+    if (!dup) { /* clean up on OOM */
+      for (int i = 0; i < idx; ++i) free(argv[i]);
+      free(argv);
+      return NULL;
+    }
+    pct_decode(dup);
+    argv[idx++] = dup;
   }
 
-  if (cnt == 0) return NULL;
-
-  char **argv = (char **)calloc((size_t)cnt + 1, sizeof(char *));
-  for (int i = 0; i < cnt; ++i) argv[i] = tmp[i];
-  argv[cnt] = NULL;
-
-  if (argc_out) *argc_out = cnt;
+  if (argc_out) *argc_out = idx;
   return argv;
 }
 
