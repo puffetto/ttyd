@@ -131,6 +131,7 @@ static void accumulate_stderr(struct pss_raw *pss, const uint8_t *p, size_t n) {
 /* ----- data pump helpers ----- */
 
 static int pump_fd_to_wsbuf(struct pss_raw *pss, int fd) {
+  if (fd < 0) return 0;
   if (pss->ws_len) return 0; /* wait for WRITEABLE to flush previous */
   unsigned char *p = (unsigned char *)malloc(LWS_PRE + WS_MAX_CHUNK);
   if (!p) return 0;
@@ -146,6 +147,7 @@ static int pump_fd_to_wsbuf(struct pss_raw *pss, int fd) {
 }
 
 static void pump_err(struct pss_raw *pss) {
+  if (pss->fd_err_r < 0) return;
   uint8_t tmp[WS_MAX_CHUNK];
   ssize_t n = read(pss->fd_err_r, tmp, sizeof(tmp));
   if (n <= 0) return;
@@ -177,12 +179,19 @@ static void sul_poll_cb(lws_sorted_usec_list_t *sul) {
   if (!pss->child_dead) {
     int st;
     for (;;) {
-    pid_t r = waitpid(pss->pid, &st, WNOHANG);
+      pid_t r = waitpid(pss->pid, &st, WNOHANG);
       if (r == 0) break;                  // still running
-    if (r == pss->pid) {
-      pss->child_dead = 1;
-      lws_close_reason(pss->wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
-      lws_callback_on_writable(pss->wsi);
+      if (r == pss->pid) {
+        pss->child_dead = 1;
+
+        /* --- NEW: close the pipes immediately to stop further I/O --- */
+        if (pss->fd_in_w >= 0)  { close(pss->fd_in_w);  pss->fd_in_w  = -1; }
+        if (pss->fd_out_r >= 0) { close(pss->fd_out_r); pss->fd_out_r = -1; }
+        if (pss->fd_err_r >= 0) { close(pss->fd_err_r); pss->fd_err_r = -1; }
+
+        /* Tell the peer we're closing normally and flush any pending payload */
+        lws_close_reason(pss->wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
+        lws_callback_on_writable(pss->wsi);
         break;
       }
       if (r < 0 && errno == EINTR) continue;
