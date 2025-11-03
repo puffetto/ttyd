@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h> /* gethostname */
 
 #include "pty.h"
 #include "server.h"
@@ -191,12 +192,13 @@ static void wsi_output(struct lws *wsi, pty_buf_t *buf) {
 
 static bool check_auth(struct lws *wsi, struct pss_tty *pss) {
   if (server->auth_header != NULL) {
-    return lws_hdr_custom_copy(wsi, pss->user, sizeof(pss->user), server->auth_header, strlen(server->auth_header)) > 0;
+    return lws_hdr_custom_copy(wsi, pss->user, sizeof(pss->user),
+                               server->auth_header, (int)strlen(server->auth_header)) > 0;
   }
 
   if (server->credential != NULL) {
     char buf[256];
-    size_t n = lws_hdr_copy(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_AUTHORIZATION);
+    int n = lws_hdr_copy(wsi, buf, (int)sizeof(buf), WSI_TOKEN_HTTP_AUTHORIZATION);
     return n >= 7 && strstr(buf, "Basic ") && !strcmp(buf + 6, server->credential);
   }
 
@@ -242,6 +244,10 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       pss->wsi = wsi;
       pss->lws_close_status = LWS_CLOSE_STATUS_NOSTATUS;
 
+      /* ensure predictable initial state for -a handling */
+      pss->argc = 0;
+      pss->args = NULL;
+
       if (server->url_arg) {
         int extra = 0;
         char **args = ttyd_collect_url_args(wsi, &extra);
@@ -252,7 +258,6 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
           free(args); /* free just the vector, not the strings */
         }
       }
-
 
       server->client_count++;
 
@@ -301,71 +306,77 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
         pss->len += len;
       }
 
-      const char command = pss->buffer[0];
+      {
+        const char command = pss->buffer[0];
 
-      // check auth
-      if (server->credential != NULL && !pss->authenticated && command != JSON_DATA) {
-        lwsl_warn("WS client not authenticated\n");
-        return 1;
-      }
+        // check auth
+        if (server->credential != NULL && !pss->authenticated && command != JSON_DATA) {
+          lwsl_warn("WS client not authenticated\n");
+          return 1;
+        }
 
-      // check if there are more fragmented messages
-      if (lws_remaining_packet_payload(wsi) > 0 || !lws_is_final_fragment(wsi)) {
-        return 0;
-      }
+        // check if there are more fragmented messages
+        if (lws_remaining_packet_payload(wsi) > 0 || !lws_is_final_fragment(wsi)) {
+          return 0;
+        }
 
-      switch (command) {
-        case INPUT:
-          if (!server->writable) break;
-          int err = pty_write(pss->process, pty_buf_init(pss->buffer + 1, pss->len - 1));
-          if (err) {
-            lwsl_err("uv_write: %s (%s)\n", uv_err_name(err), uv_strerror(err));
-            return -1;
-          }
-          break;
-        case RESIZE_TERMINAL:
-          if (pss->process == NULL) break;
-          json_object_put(
-              parse_window_size(pss->buffer + 1, pss->len - 1, &pss->process->columns, &pss->process->rows));
-          pty_resize(pss->process);
-          break;
-        case PAUSE:
-          pty_pause(pss->process);
-          break;
-        case RESUME:
-          pty_resume(pss->process);
-          break;
-        case JSON_DATA:
-          if (pss->process != NULL) break;
-          uint16_t columns = 0;
-          uint16_t rows = 0;
-          json_object *obj = parse_window_size(pss->buffer, pss->len, &columns, &rows);
-          if (server->credential != NULL) {
-            struct json_object *o = NULL;
-            if (json_object_object_get_ex(obj, "AuthToken", &o)) {
-              const char *token = json_object_get_string(o);
-              if (token != NULL && !strcmp(token, server->credential))
-                pss->authenticated = true;
-              else
-                lwsl_warn("WS authentication failed with token: %s\n", token);
+        switch (command) {
+          case INPUT:
+            if (!server->writable) break;
+            {
+              int err = pty_write(pss->process, pty_buf_init(pss->buffer + 1, pss->len - 1));
+              if (err) {
+                lwsl_err("uv_write: %s (%s)\n", uv_err_name(err), uv_strerror(err));
+                return -1;
+              }
             }
-            if (!pss->authenticated) {
+            break;
+          case RESIZE_TERMINAL:
+            if (pss->process == NULL) break;
+            json_object_put(
+                parse_window_size(pss->buffer + 1, pss->len - 1, &pss->process->columns, &pss->process->rows));
+            pty_resize(pss->process);
+            break;
+          case PAUSE:
+            pty_pause(pss->process);
+            break;
+          case RESUME:
+            pty_resume(pss->process);
+            break;
+          case JSON_DATA:
+            if (pss->process != NULL) break;
+            {
+              uint16_t columns = 0;
+              uint16_t rows = 0;
+              json_object *obj = parse_window_size(pss->buffer, pss->len, &columns, &rows);
+              if (server->credential != NULL) {
+                struct json_object *o = NULL;
+                if (json_object_object_get_ex(obj, "AuthToken", &o)) {
+                  const char *token = json_object_get_string(o);
+                  if (token != NULL && !strcmp(token, server->credential))
+                    pss->authenticated = true;
+                  else
+                    lwsl_warn("WS authentication failed with token: %s\n", token);
+                }
+                if (!pss->authenticated) {
+                  json_object_put(obj);
+                  lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, NULL, 0);
+                  return -1;
+                }
+              }
               json_object_put(obj);
-              lws_close_reason(wsi, LWS_CLOSE_STATUS_POLICY_VIOLATION, NULL, 0);
-              return -1;
+              if (!spawn_process(pss, columns, rows)) return 1;
             }
-          }
-          json_object_put(obj);
-          if (!spawn_process(pss, columns, rows)) return 1;
-          break;
-        default:
-          lwsl_warn("ignored unknown message type: %c\n", command);
-          break;
-      }
+            break;
+          default:
+            lwsl_warn("ignored unknown message type: %c\n", command);
+            break;
+        }
 
-      if (pss->buffer != NULL) {
-        free(pss->buffer);
-        pss->buffer = NULL;
+        if (pss->buffer != NULL) {
+          free(pss->buffer);
+          pss->buffer = NULL;
+        }
       }
       break;
 
@@ -378,6 +389,11 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       if (pss->pty_buf != NULL) pty_buf_free(pss->pty_buf);
       for (int i = 0; i < pss->argc; i++) {
         free(pss->args[i]);
+      }
+      if (pss->args) {
+        free(pss->args);
+        pss->args = NULL;
+        pss->argc = 0;
       }
 
       if (pss->process != NULL) {
